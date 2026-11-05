@@ -610,8 +610,12 @@ function renderAdmin(){
         <select id="mn-section"></select>
         <label>القاعة</label>
         <select id="mn-hall"></select>
-        <label>التاريخ (يوم-شهر-سنة، مثال: 21-10-2026)</label>
-        <input id="mn-date" type="text" inputmode="numeric" dir="ltr" autocomplete="off" placeholder="21-10-2026"/>
+        <label>تاريخ المحاضرة (اختر من تواريخ محاضرات الشعبة عشان يدخل بنفس عمود التاريخ)</label>
+        <select id="mn-date-sel"></select>
+        <div id="mn-date-new" class="hidden">
+          <label>التاريخ الجديد (يوم-شهر-سنة، مثال: 21-10-2026) — بينشئ عمود جديد بالتصدير</label>
+          <input id="mn-date" type="text" inputmode="numeric" dir="ltr" autocomplete="off" placeholder="21-10-2026"/>
+        </div>
         <label>الأرقام الجامعية (رقم بكل سطر، أو افصل بفاصلة)</label>
         <textarea id="mn-nums" rows="4" dir="ltr" style="width:100%;"></textarea>
         <button id="mn-add">إضافة الحضور</button>
@@ -1162,14 +1166,35 @@ function renderAdmin(){
       secSel.innerHTML = ""; hallSel.innerHTML = "";
       state.sections.forEach((x,i)=>{ const o=document.createElement("option"); o.value=String(i); o.textContent = x.name || "(بدون اسم شعبة)"; secSel.appendChild(o); });
       (rh.data || []).forEach(h=>{ const o=document.createElement("option"); o.value=h.id; o.textContent = h.name; hallSel.appendChild(o); });
+      await loadManualDates();
     }catch(e){ document.getElementById("mn-msg").innerHTML = msg(e.message, false); }
   }
+  const isoToDMY = iso => { const [y,m,d] = String(iso).split("-"); return `${parseInt(d,10)}-${parseInt(m,10)}-${y}`; };
+  async function loadManualDates(){
+    const uniId = currentUniId(), sel = document.getElementById("mn-date-sel");
+    const sec = state.sections[parseInt(document.getElementById("mn-section").value,10)];
+    sel.innerHTML = "";
+    const addOpt = (v, t) => { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); };
+    if(uniId && sec){
+      try{
+        const r = await callFn("monitor-action", {action:"list_lecture_dates", payload:{university_id: uniId, section: sec.name}}, MK);
+        (r.dates || []).forEach(d=> addOpt(d.date, `${isoToDMY(d.date)} — ${d.count} حاضر`));
+      }catch(e){ document.getElementById("mn-msg").innerHTML = msg(e.message, false); }
+    }
+    addOpt("__new__", "تاريخ آخر (جديد)…");
+    document.getElementById("mn-date-new").classList.toggle("hidden", sel.value !== "__new__");
+  }
+  document.getElementById("mn-section").addEventListener("change", loadManualDates);
+  document.getElementById("mn-date-sel").addEventListener("change", ()=>{
+    document.getElementById("mn-date-new").classList.toggle("hidden", document.getElementById("mn-date-sel").value !== "__new__");
+  });
   document.getElementById("mn-add").onclick = async ()=>{
     const uniId = currentUniId(), out = document.getElementById("mn-msg");
     const sec = state.sections[parseInt(document.getElementById("mn-section").value,10)];
     const hallId = document.getElementById("mn-hall").value;
-    const dateTxt = document.getElementById("mn-date").value.trim();
-    const date = parseDMY(dateTxt);
+    const selVal = document.getElementById("mn-date-sel").value;
+    const dateTxt = selVal === "__new__" ? document.getElementById("mn-date").value.trim() : isoToDMY(selVal);
+    const date = selVal === "__new__" ? parseDMY(dateTxt) : selVal;
     const nums = document.getElementById("mn-nums").value.split(/[\n,،;\s]+/).map(x=>x.trim()).filter(Boolean);
     if(!uniId || !sec || !hallId){ out.innerHTML = msg("اختر الجامعة والشعبة والقاعة", false); return; }
     if(!date){ out.innerHTML = msg("اكتب التاريخ بصيغة يوم-شهر-سنة، مثال: 21-10-2026", false); return; }
@@ -1177,7 +1202,14 @@ function renderAdmin(){
     const uniName = state.universities.find(u=>u.id===uniId)?.name || "";
     if(!confirm(`تأكيد: إضافة حضور ${nums.length} طالب بتاريخ ${dateTxt}\nالجامعة: ${uniName}\nالشعبة: ${sec.name || "(بدون اسم)"}\n\nتأكد إنك متأكد من وجودهم فعلاً.`)) return;
     try{
-      const r = await callFn("monitor-action", {action:"add_manual_attendance", payload:{university_id: uniId, hall_id: hallId, section: sec.name, date, numbers: nums}}, MK);
+      let r = await callFn("monitor-action", {action:"add_manual_attendance", payload:{university_id: uniId, hall_id: hallId, section: sec.name, date, numbers: nums}}, MK);
+      if(r.new_date){
+        // التاريخ ما فيه أي حضور مسجّل للشعبة → بيطلع عمود جديد بالتصدير؛ لازم تأكيد صريح
+        if(!confirm(`⚠️ ما في أي حضور مسجّل لهذه الشعبة بتاريخ ${dateTxt}.\nإضافته بتنشئ عمود تاريخ جديد بالتصدير.\nإذا كنت بدك تضيفه لمحاضرة موجودة، ألغِ واختر تاريخها من القائمة.\n\nتكمل بتاريخ جديد؟`)){
+          out.innerHTML = msg("تم الإلغاء — ما انضاف شي", false); return;
+        }
+        r = await callFn("monitor-action", {action:"add_manual_attendance", payload:{university_id: uniId, hall_id: hallId, section: sec.name, date, numbers: nums, allow_new_date: true}}, MK);
+      }
       let html = msg(`✅ تمت إضافة حضور ${r.added.length} طالب`, true);
       const bad = [];
       if(r.already.length) bad.push("مسجّل حضوره مسبقاً بهذا اليوم: " + r.already.join("، "));
@@ -1186,6 +1218,7 @@ function renderAdmin(){
       if(bad.length) html += msg("⚠️ " + bad.join(" — "), false);
       out.innerHTML = html;
       if(!bad.length) document.getElementById("mn-nums").value = "";
+      loadManualDates();
     }catch(e){ out.innerHTML = msg(e.message, false); }
   };
   document.getElementById("sec-manual").addEventListener("toggle", ()=>{ if(document.getElementById("sec-manual").open) loadManual(); });
@@ -1488,7 +1521,7 @@ else renderStudent();
 // رقم النسخة (للأدمن والمراقب فقط) — عشان تتأكد إنك شايف آخر نسخة مرفوعة على GitHub مش نسخة قديمة محفوظة بالمتصفح
 if(role !== "student"){
   const ver = document.createElement("div");
-  ver.textContent = "نسخة: 2026-11-05-AF";
+  ver.textContent = "نسخة: 2026-11-05-AG";
   ver.style.cssText = "position:fixed;bottom:4px;left:6px;font-size:11px;opacity:.55;direction:ltr;pointer-events:none;";
   document.body.appendChild(ver);
 }
